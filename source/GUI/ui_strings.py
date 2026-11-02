@@ -38,7 +38,7 @@ def get_ui_messages() -> dict[str, str]:
         "nav.settings": _("程序设置"),
         "nav.disclaimer": _("免责声明"),
         "nav.about": _("关于项目"),
-        "task.link": _("请输入小红书图文/视频作品链接"),
+        "task.link": _("请输入小红书图文/视频作品链接或作者主页链接"),
         "task.link_placeholder": _("多个链接之间使用空格或换行分隔"),
         "task.index": _("图片序号"),
         "task.index_placeholder": _("例如：1 3 5，留空表示全部，仅限处理单个链接"),

@@ -61,6 +61,7 @@ from .download import Download
 from .explore import Explore
 from .image import Image
 from .request import Html
+from .user_posted import UserPosted
 from .video import Video
 
 __all__ = ["XHS"]
@@ -117,9 +118,14 @@ class XHS:
     LINK_XHS = compile(r"(?:https?://)?www\.xiaohongshu\.com/explore/\S+")
     LINK_RN = compile(r"(?:https?://)?www\.rednote\.com/explore/\S+")
     USER_XHS = compile(
-        r"(?:https?://)?www\.xiaohongshu\.com/user/profile/[a-z0-9]+/\S+"
+        r"(?:https?://)?www\.xiaohongshu\.com/user/profile/[a-z0-9]+(?:/\S+)?"
     )
-    USER_RN = compile(r"(?:https?://)?www\.rednote\.com/user/profile/[a-z0-9]+/\S+")
+    USER_RN = compile(
+        r"(?:https?://)?www\.rednote\.com/user/profile/[a-z0-9]+(?:/\S+)?"
+    )
+    LINK_USER = compile(
+        r"(?:https?://)?(?:www\.xiaohongshu\.com|www\.rednote\.com)/user/profile/[a-z0-9]+"
+    )
     SHARE_XHS = compile(r"(?:https?://)?www\.xiaohongshu\.com/discovery/item/\S+")
     SHARE_RN = compile(r"(?:https?://)?www\.rednote\.com/discovery/item/\S+")
     SHORT = compile(
@@ -206,6 +212,7 @@ class XHS:
         )
         self.mapping = Mapping(self.manager, self.map_recorder)
         self.html = Html(self.manager)
+        self.user_posted = UserPosted(self.manager)
         self.image = Image()
         self.video = Video()
         self.explore = Explore()
@@ -319,8 +326,11 @@ class XHS:
         proxy: str | None = None,
     ) -> list[dict]:
         if not (
-            urls := await self.extract_links(
-                url,
+            urls := await self.expand_links(
+                await self.extract_links(
+                    url,
+                    proxy=proxy,
+                ),
                 proxy=proxy,
             )
         ):
@@ -376,8 +386,10 @@ class XHS:
         index: list | tuple = None,
         check_record: bool = True,
     ) -> None:
-        url = await self.extract_links(
-            url,
+        url = await self.expand_links(
+            await self.extract_links(
+                url,
+            )
         )
         if not url:
             self.logging(_("提取小红书作品链接失败"), WARNING)
@@ -440,6 +452,69 @@ class XHS:
             elif j := self.ID_USER.search(i):
                 ids.append(j.group(1))
         return ids
+
+    def is_user_link(self, url: str) -> bool:
+        """判断链接是否为作者主页链接。"""
+
+        return bool(self.LINK_USER.search(url))
+
+    @staticmethod
+    def extract_user_id(url: str) -> str:
+        """从作者主页链接中获取作者 ID。"""
+
+        segments = urlparse(url).path.rstrip("/").split("/")
+        if "profile" in segments:
+            return segments[segments.index("profile") + 1]
+        return segments[-1]
+
+    async def extract_user_posted_links(
+        self,
+        url: str,
+        cookie: str | None = None,
+        proxy: str | None = None,
+    ) -> list[str]:
+        """解析作者主页，返回该作者发布的所有作品链接。"""
+
+        user_id = self.extract_user_id(url)
+        self.logging(_("开始解析作者主页：{0}").format(user_id))
+        note_ids = await self.user_posted.run(
+            user_id,
+            cookie=cookie,
+            proxy=proxy,
+        )
+        if not note_ids:
+            self.logging(_("作者 {0} 未获取到任何作品").format(user_id), WARNING)
+            return []
+        self.logging(_("作者 {0} 共获取到 {1} 个作品").format(user_id, len(note_ids)))
+        return [self.user_posted.note_link(i) for i in note_ids]
+
+    async def expand_links(
+        self,
+        urls: list[str],
+        cookie: str | None = None,
+        proxy: str | None = None,
+    ) -> list[str]:
+        """将作者主页链接展开为其发布的所有作品链接。"""
+
+        result = []
+        author_mode = False
+        for i in urls:
+            if self.is_user_link(i):
+                author_mode = True
+                result.extend(
+                    await self.extract_user_posted_links(
+                        i,
+                        cookie=cookie,
+                        proxy=proxy,
+                    )
+                )
+            else:
+                result.append(i)
+        if author_mode and not self.note_generator.note_format:
+            # 作者主页模式下默认保存每个作品的文案信息
+            self.note_generator.note_format = "txt"
+            self.logging(_("作者主页模式：默认保存每个作品的文案信息（txt 格式）"))
+        return result
 
     async def _get_html_data(
         self,
@@ -735,8 +810,10 @@ class XHS:
         await gather(
             *[
                 self.queue.put(i)
-                for i in await self.extract_links(
-                    content,
+                for i in await self.expand_links(
+                    await self.extract_links(
+                        content,
+                    )
                 )
             ]
         )
